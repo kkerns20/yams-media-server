@@ -317,3 +317,211 @@ This reinforced several Docker troubleshooting principles:
 - test raw IP connectivity before blaming DNS;
 - understand which containers depend on another container's network namespace;
 - recreate containers after changing environment values that are injected at container creation time.
+
+## 7. Verify the YAMS services
+
+Starting the stack is only the first check. A container can be running while the application inside it is not actually usable.
+
+Verification should happen at three levels:
+
+1. Is the container running?
+2. Is the container healthy, when a healthcheck exists?
+3. Can the application itself be reached and used?
+
+### 7.1 Check the whole stack
+
+From the YAMS directory:
+
+```bash
+cd /opt/yams
+docker compose ps -a
+```
+
+This shows the status of every service in the Compose project.
+
+Look for:
+
+- `Up` — the container process is running.
+- `healthy` — the configured healthcheck is succeeding.
+- `unhealthy` — the process is running, but the healthcheck is failing.
+- `Exited` — the container is stopped.
+
+A useful follow-up is:
+
+```bash
+docker ps
+```
+
+This provides a quick view of currently running containers and their published ports.
+
+### 7.2 Check recent logs
+
+If a service is not behaving as expected, inspect its recent logs:
+
+```bash
+docker logs --tail 50 <container-name>
+```
+
+Examples:
+
+```bash
+docker logs --tail 50 gluetun
+docker logs --tail 50 plex
+docker logs --tail 50 sonarr
+```
+
+For live troubleshooting, follow the logs:
+
+```bash
+docker logs -f <container-name>
+```
+
+Press `Ctrl+C` to stop following the log output.
+
+### 7.3 Verify the web interfaces
+
+Most YAMS applications expose a local web interface.
+
+For this installation, the commonly used ports include:
+
+| Service | Port | Purpose |
+| --- | ---: | --- |
+| Portainer | 9000 | Docker management |
+| qBittorrent | 8080 | Torrent client |
+| SABnzbd | 8081 | Usenet download client |
+| Sonarr | 8989 | TV automation |
+| Radarr | 7878 | Movie automation |
+| Lidarr | 8686 | Music automation |
+| Bazarr | 6767 | Subtitle automation |
+| Prowlarr | 9696 | Indexer management |
+
+In this setup, qBittorrent and SABnzbd share Gluetun's network namespace, so their web ports are published through Gluetun rather than directly by those containers.
+
+The exact published ports should always be confirmed from the running Compose stack:
+
+```bash
+docker compose ps
+```
+
+A web interface can normally be reached using the server's LAN address:
+
+```text
+http://<server-ip>:<port>
+```
+
+For example:
+
+```text
+http://<server-ip>:8989
+```
+
+Do not expose these management interfaces directly to the public internet unless they are intentionally secured for remote access.
+
+### 7.4 Verify Plex
+
+Plex behaves slightly differently from the other services and may not show a normal published port in `docker compose ps`, depending on how networking is configured.
+
+Check the container:
+
+```bash
+docker ps | grep plex
+```
+
+Check recent logs:
+
+```bash
+docker logs --tail 50 plex
+```
+
+A useful sign of a working Plex server is that its internal service is listening on port `32400`.
+
+The Plex web interface is typically accessed on the local network using:
+
+```text
+http://<server-ip>:32400/web
+```
+
+### 7.5 Verify the VPN-dependent download clients
+
+qBittorrent and SABnzbd share Gluetun's network namespace.
+
+Because of that relationship, a running qBittorrent or SABnzbd container does not prove that it has internet access.
+
+First verify Gluetun:
+
+```bash
+docker exec gluetun ping -c 3 1.1.1.1
+```
+
+Then verify the VPN routing:
+
+```bash
+yams check-vpn
+```
+
+The qBittorrent public IP should differ from the Ubuntu host public IP.
+
+This confirms that qBittorrent is using the VPN path instead of the host's normal connection.
+
+### 7.6 Check container health directly
+
+To inspect the health state of a specific container:
+
+```bash
+docker inspect <container-name> --format='{{json .State.Health}}'
+```
+
+For a simpler status:
+
+```bash
+docker inspect <container-name> --format='{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}'
+```
+
+Example:
+
+```bash
+docker inspect gluetun --format='{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}'
+```
+
+This helps distinguish:
+
+```text
+running healthy
+```
+
+from:
+
+```text
+running unhealthy
+```
+
+### 7.7 Verification checklist
+
+After starting or changing the stack, verify:
+
+- Docker Compose shows the expected containers running.
+- Gluetun becomes healthy.
+- Gluetun can reach a raw internet IP.
+- `yams check-vpn` confirms qBittorrent is using a different public IP.
+- Sonarr, Radarr, Prowlarr, and the other web interfaces load locally.
+- Plex responds on its local web interface.
+- Application logs do not show repeated startup failures.
+- No service is unexpectedly restarting or exiting.
+
+The main lesson is that service verification should move from the outside in:
+
+```text
+Docker daemon
+    ↓
+Container running
+    ↓
+Container health
+    ↓
+Network connectivity
+    ↓
+Application web interface
+    ↓
+Application function
+```
+
+That makes troubleshooting much faster because each layer can be tested independently.
