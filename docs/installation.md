@@ -167,3 +167,153 @@ For example, after changing the Mullvad WireGuard values, the VPN-dependent cont
 ```bash
 docker compose up -d --force-recreate gluetun qbittorrent sabnzbd
 ```
+
+## 6. Mullvad and Gluetun VPN setup
+
+Gluetun provides the VPN network layer for qBittorrent and SABnzbd.
+
+In this setup, the Ubuntu host uses its normal internet connection, while the download clients share Gluetun's network namespace and route their traffic through Mullvad using WireGuard.
+
+Conceptually:
+
+```text
+Ubuntu host
+   |
+   +--> normal host internet
+   |
+   +--> Docker
+         |
+         +--> Gluetun --> Mullvad WireGuard --> Internet
+                |
+                +--> qBittorrent
+                +--> SABnzbd
+```
+
+This design is useful because if the VPN tunnel fails, qBittorrent and SABnzbd lose connectivity instead of silently falling back to the host connection.
+
+### 6.1 Create or refresh the Mullvad WireGuard configuration
+
+Use Mullvad's WireGuard configuration generator to create a configuration for this Linux/YAMS setup.
+
+The important values are:
+
+```text
+PrivateKey
+IPv4 Address ending in /32
+```
+
+These two values must belong to the same Mullvad WireGuard configuration.
+
+Do not commit the private key to GitHub.
+
+### 6.2 Update the YAMS environment file
+
+Move to the YAMS installation directory:
+
+```bash
+cd /opt/yams
+```
+
+Create a backup before editing:
+
+```bash
+cp .env .env.backup
+```
+
+Open the environment file:
+
+```bash
+nano .env
+```
+
+Update the WireGuard values:
+
+```text
+WIREGUARD_PRIVATE_KEY=<private-key>
+WIREGUARD_ADDRESSES=10.x.x.x/32
+```
+
+Save with `Ctrl+O`, press Enter, then exit with `Ctrl+X`.
+
+The real private key should never appear in this repository.
+
+### 6.3 Verify the environment values safely
+
+The address can be displayed, but the private key should be redacted:
+
+```bash
+grep -E 'WIREGUARD_PRIVATE_KEY|WIREGUARD_ADDRESSES' .env | sed -E 's/(PRIVATE_KEY=).*/\1[REDACTED]/'
+```
+
+Expected output should look similar to:
+
+```text
+WIREGUARD_PRIVATE_KEY=[REDACTED]
+WIREGUARD_ADDRESSES=10.x.x.x/32
+```
+
+### 6.4 Recreate the VPN-dependent containers
+
+Changing `.env` does not automatically modify an existing container.
+
+Recreate Gluetun and the services that share its network namespace:
+
+```bash
+docker compose up -d --force-recreate gluetun qbittorrent sabnzbd
+```
+
+This forces Docker Compose to create new container instances using the updated environment values.
+
+### 6.5 Verify Gluetun connectivity
+
+Test raw IP connectivity from inside Gluetun:
+
+```bash
+docker exec gluetun ping -c 3 1.1.1.1
+```
+
+A successful result confirms that the VPN container can pass traffic.
+
+Then check container health:
+
+```bash
+docker compose ps
+```
+
+Gluetun should eventually report a healthy state.
+
+### 6.6 Verify qBittorrent is using the VPN
+
+Run:
+
+```bash
+yams check-vpn
+```
+
+The important result is that qBittorrent's public IP differs from the Ubuntu host's public IP.
+
+That confirms the download client is routed through Mullvad rather than the host connection.
+
+### 6.7 Troubleshooting lesson
+
+During this build, the host network and Docker daemon were both healthy while Gluetun could not pass traffic.
+
+The main symptoms were:
+
+- Gluetun was running but unhealthy.
+- Raw IP traffic from inside Gluetun failed.
+- DNS lookups inside Gluetun timed out.
+- qBittorrent could not report a public IP.
+- qBittorrent and SABnzbd were correctly attached to Gluetun's network namespace.
+
+The root cause was an incorrect or stale Mullvad WireGuard private key/address pair in `.env`.
+
+After replacing the matching WireGuard credentials and recreating Gluetun, qBittorrent, and SABnzbd, VPN traffic worked normally.
+
+This reinforced several Docker troubleshooting principles:
+
+- test host networking and container networking separately;
+- do not assume `Up` means healthy;
+- test raw IP connectivity before blaming DNS;
+- understand which containers depend on another container's network namespace;
+- recreate containers after changing environment values that are injected at container creation time.
