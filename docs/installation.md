@@ -525,3 +525,474 @@ Application function
 ```
 
 That makes troubleshooting much faster because each layer can be tested independently.
+
+## 8. Persistence, restart behavior, and backups
+
+Containers should be treated as replaceable runtime instances. Important application data should live outside the container through bind mounts or Docker volumes.
+
+This matters because containers may be:
+
+- restarted;
+- recreated after configuration changes;
+- replaced during image updates;
+- removed and rebuilt during troubleshooting.
+
+Persistent configuration should survive those operations as long as the mapped storage is preserved.
+
+### 8.1 Check restart policies
+
+A container restart policy controls what Docker does after a process exits or the Docker daemon restarts.
+
+Check a container's restart policy with:
+
+```bash
+docker inspect <container-name> --format='{{.HostConfig.RestartPolicy.Name}}'
+```
+
+Example:
+
+```bash
+docker inspect plex --format='{{.HostConfig.RestartPolicy.Name}}'
+```
+
+A common policy in this stack is:
+
+```text
+unless-stopped
+```
+
+This generally means Docker will restart the container automatically unless it was intentionally stopped.
+
+### 8.2 Understand what survives a container recreation
+
+Recreating a container does not necessarily mean losing its settings.
+
+The important distinction is:
+
+```text
+Container
+    ↓ replaceable
+Persistent configuration / media
+    ↓ should remain outside the container
+```
+
+To inspect mounts:
+
+```bash
+docker inspect <container-name> --format='{{json .Mounts}}'
+```
+
+For easier reading, Docker Compose can also help show how storage is mapped:
+
+```bash
+docker compose config
+```
+
+Never assume data is persistent without checking the configured mounts.
+
+### 8.3 YAMS backups
+
+YAMS provides a backup helper:
+
+```bash
+yams backup
+```
+
+Backups should be treated as sensitive because they may contain application configuration or credentials.
+
+Do not commit YAMS backup archives to a public GitHub repository.
+
+A backup is only useful if it can eventually be restored, so restoration should be tested before relying on backups as the only recovery plan.
+
+---
+
+## 9. Storage layout and permissions
+
+Media-server problems are often storage or permission problems rather than application problems.
+
+For this build, media storage is located under:
+
+```text
+/srv/media
+```
+
+### 9.1 Inspect the storage location
+
+Check the directory:
+
+```bash
+ls -ld /srv/media
+```
+
+Check available space:
+
+```bash
+df -h /srv/media
+```
+
+If needed, inspect the directory tree:
+
+```bash
+find /srv/media -maxdepth 2 -type d
+```
+
+### 9.2 Ownership and permissions
+
+Linux permissions determine whether applications can read, write, rename, move, or delete files.
+
+Useful checks:
+
+```bash
+ls -ld /srv/media
+ls -l /srv/media
+```
+
+To see the current user and group IDs:
+
+```bash
+id
+```
+
+Many LinuxServer.io containers use a user ID and group ID supplied through environment variables such as `PUID` and `PGID`.
+
+The host permissions and container user IDs should be compatible with the storage directories used by the applications.
+
+### 9.3 Why consistent paths matter
+
+Applications such as Sonarr, Radarr, qBittorrent, SABnzbd, and Plex may need to refer to the same files.
+
+Consistent path mappings make that easier.
+
+Conceptually:
+
+```text
+Host filesystem
+/srv/media
+    |
+    +--> download client
+    +--> Sonarr / Radarr
+    +--> Plex
+```
+
+If different containers see the same host directory under inconsistent internal paths, imports and moves can become harder to troubleshoot.
+
+---
+
+## 10. Service relationships
+
+The YAMS stack works because the services cooperate rather than operate independently.
+
+A simplified relationship looks like:
+
+```text
+Prowlarr
+   |
+   +--> Sonarr ----\
+   +--> Radarr -----+--> qBittorrent / SABnzbd --> download
+   +--> Lidarr ----/              |
+                                  v
+                              /srv/media
+                                  |
+                                  v
+                                Plex
+```
+
+Bazarr works alongside the media-management applications to manage subtitles.
+
+Portainer provides a graphical interface for inspecting Docker.
+
+Watchtower is used to monitor or manage container image updates depending on its configuration.
+
+### 10.1 Verify containers can resolve each other
+
+Docker Compose normally provides service-name DNS within the Compose network.
+
+A useful test from one container is:
+
+```bash
+docker exec <container-name> getent hosts <service-name>
+```
+
+Example:
+
+```bash
+docker exec sonarr getent hosts prowlarr
+```
+
+This can help distinguish an application configuration problem from a Docker DNS or networking problem.
+
+### 10.2 Use service names when appropriate
+
+Inside a Docker Compose network, applications can often communicate using Compose service names rather than the host LAN IP.
+
+For example, one service may be reachable internally using a hostname such as:
+
+```text
+prowlarr
+radarr
+sonarr
+```
+
+The exact application URLs and ports should be taken from the active Compose configuration.
+
+---
+
+## 11. Updating the stack
+
+Updates should be approached as a controlled change rather than a blind restart.
+
+Before updating:
+
+1. Confirm the stack is healthy.
+2. Make a backup when appropriate.
+3. Check available disk space.
+4. Record any important custom configuration.
+5. Confirm that secrets are stored outside the Git repository.
+
+Useful status commands:
+
+```bash
+cd /opt/yams
+docker compose ps -a
+yams status
+```
+
+YAMS includes an update-related helper:
+
+```bash
+yams update-containers
+```
+
+After an update, repeat the verification process from Section 7:
+
+```bash
+docker compose ps -a
+docker logs --tail 50 <container-name>
+docker exec gluetun ping -c 3 1.1.1.1
+yams check-vpn
+```
+
+The goal is to verify the system after the change instead of assuming that a successful update command means every service is working correctly.
+
+---
+
+## 12. Security and secret management
+
+This repository is public, so credentials and machine-specific secrets must remain outside Git.
+
+Never commit:
+
+```text
+.env
+WireGuard private keys
+VPN configuration files containing credentials
+Portainer setup tokens
+application passwords or API keys
+backup archives containing configuration
+private certificates or private keys
+```
+
+The repository `.gitignore` is intended to reduce accidental commits of sensitive files, but `.gitignore` is not a substitute for checking changes before committing.
+
+Always review:
+
+```bash
+git status
+git diff
+```
+
+before:
+
+```bash
+git add
+git commit
+git push
+```
+
+### 12.1 Check staged files before committing
+
+After `git add`, review what is staged:
+
+```bash
+git diff --cached
+```
+
+This is especially important in infrastructure repositories where configuration files may contain secrets.
+
+### 12.2 If a secret is accidentally committed
+
+Removing a secret from the latest file is not enough if it already exists in Git history.
+
+The credential should be treated as exposed and rotated or replaced.
+
+The Git history may also need to be rewritten before the repository is considered clean.
+
+---
+
+## 13. Troubleshooting workflow
+
+When something breaks, troubleshoot one layer at a time instead of changing several things at once.
+
+A useful order is:
+
+```text
+1. Host
+2. Docker daemon
+3. Compose stack
+4. Container state
+5. Container health
+6. Network
+7. Application
+8. Service-to-service integration
+9. Storage and permissions
+```
+
+### 13.1 Host checks
+
+```bash
+cat /etc/os-release
+df -h
+ip addr
+ping -c 3 1.1.1.1
+getent hosts github.com
+```
+
+### 13.2 Docker checks
+
+```bash
+systemctl status docker
+docker version
+docker compose version
+docker ps
+docker ps -a
+```
+
+### 13.3 Compose checks
+
+```bash
+cd /opt/yams
+docker compose ps -a
+docker compose config --services
+```
+
+### 13.4 Container logs
+
+```bash
+docker logs --tail 100 <container-name>
+```
+
+Follow live output:
+
+```bash
+docker logs -f <container-name>
+```
+
+### 13.5 Health state
+
+```bash
+docker inspect <container-name> --format='{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}'
+```
+
+### 13.6 Networking from inside a container
+
+Raw IP test:
+
+```bash
+docker exec <container-name> ping -c 3 1.1.1.1
+```
+
+DNS test:
+
+```bash
+docker exec <container-name> getent hosts github.com
+```
+
+If raw IP traffic works but DNS resolution fails, investigate DNS.
+
+If raw IP traffic also fails, the problem is lower in the network path.
+
+### 13.7 Inspect container networking
+
+```bash
+docker inspect <container-name> --format='{{.HostConfig.NetworkMode}}'
+```
+
+For qBittorrent and SABnzbd, this is especially useful because they share Gluetun's network namespace.
+
+### 13.8 Inspect routes when needed
+
+For deeper networking problems:
+
+```bash
+docker exec gluetun ip addr
+docker exec gluetun ip rule
+docker exec gluetun ip route show table all
+```
+
+These commands help verify that the WireGuard interface and policy routing exist.
+
+---
+
+## 14. Routine maintenance checklist
+
+A simple periodic check can catch problems before they become confusing.
+
+### Quick health check
+
+```bash
+cd /opt/yams
+docker compose ps -a
+yams check-vpn
+df -h
+```
+
+Review any container that is:
+
+```text
+unhealthy
+Exited
+Restarting
+```
+
+### After configuration changes
+
+Verify:
+
+- the expected containers were recreated if required;
+- Gluetun is healthy;
+- qBittorrent remains behind the VPN;
+- application web interfaces still load;
+- storage paths are accessible;
+- no unexpected errors repeat in the logs.
+
+### After a system reboot
+
+Verify:
+
+```bash
+systemctl status docker
+docker compose ps -a
+yams check-vpn
+```
+
+Confirm that services using restart policies returned as expected.
+
+---
+
+## 15. Recovery mindset
+
+The goal of this project is not to create a server that never fails.
+
+The goal is to build a server that is understandable and recoverable.
+
+A healthy recovery strategy includes:
+
+- known installation steps;
+- documented configuration locations;
+- backups;
+- secrets stored outside Git;
+- repeatable verification commands;
+- understanding which services depend on one another;
+- troubleshooting one layer at a time.
+
+This repository is intended to become that recovery reference as the server evolves.
