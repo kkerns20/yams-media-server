@@ -1,79 +1,80 @@
-# Installation Notes
+# YAMS Installation Notes
 
-These notes document the installation model I am learning through this project. They are not a replacement for the current YAMS documentation.
+This document explains how I built and verified my YAMS media server on Ubuntu 24.04 LTS.
 
-## Host
+The goal is not just to record commands, but to understand what each layer does:
 
-- Ubuntu 24.04 LTS
-- Docker installed at `/usr/bin/docker`
-- Docker Compose available through `docker compose`
-- YAMS installed under `/opt/yams`
-- Media storage under `/srv/media`
+- Ubuntu provides the host operating system.
+- Docker runs the applications in containers.
+- Docker Compose manages the multi-container stack.
+- YAMS provides the media-server application stack and helper scripts.
+- Gluetun provides VPN networking for qBittorrent and SABnzbd.
+- Mullvad provides the WireGuard VPN service.
 
-## Verify Docker first
+## 1. Host preparation
 
-Before troubleshooting YAMS, verify Docker independently:
+This server runs Ubuntu 24.04 LTS.
+
+Before installing or troubleshooting YAMS, confirm the operating system:
+
+```bash
+cat /etc/os-release
+```
+
+Check available disk space:
+
+```bash
+df -h
+```
+
+Confirm the current user:
+
+```bash
+whoami
+```
+
+For this build:
+
+- Docker is installed at `/usr/bin/docker`
+- YAMS is installed under `/opt/yams`
+- Media storage is located under `/srv/media`
+
+## 2. Verify Docker first
+
+YAMS depends on Docker, so Docker should be tested independently before troubleshooting the YAMS stack.
+
+Check Docker Engine:
 
 ```bash
 docker --version
+```
+
+Check Docker Compose:
+
+```bash
 docker compose version
+```
+
+Verify that the Docker daemon is running:
+
+```bash
+systemctl status docker
+```
+
+Finally, test Docker with:
+
+```bash
 docker run hello-world
 ```
 
-If `hello-world` succeeds without `sudo`, both the Docker daemon and current-user permissions are working.
+If `hello-world` succeeds without `sudo`, that confirms:
 
-## YAMS files
+- the Docker daemon is running;
+- the current user has permission to use Docker;
+- Docker can download and run an image successfully.
 
-The current installation uses:
+## 3. Understanding the YAMS installation
 
-```text
-/opt/yams/
-├── .env
-├── docker-compose.yaml
-├── docker-compose.custom.yaml
-├── config/
-└── yams
-```
+## 4. Starting and inspecting the stack
 
-The `.env` file stores environment-specific values used by Docker Compose. It can contain secrets and must not be committed to GitHub.
-
-## Starting the stack
-
-The YAMS helper exposes commands such as:
-
-```bash
-yams start
-yams stop
-yams restart
-yams status
-yams check-vpn
-```
-
-Underneath, Docker Compose manages the multi-container application.
-
-Useful Docker commands:
-
-```bash
-docker ps
-docker ps -a
-docker compose ps -a
-docker compose config --services
-```
-
-## Editing environment configuration
-
-Back up the environment file before changing it:
-
-```bash
-cd /opt/yams
-cp .env .env.backup
-nano .env
-```
-
-In nano:
-
-- `Ctrl+O` saves
-- press Enter to confirm the filename
-- `Ctrl+X` exits
-
-If a Compose environment value changes, an existing container may need to be recreated for the new value to be applied.
+## 5. Editing YAMS environment configuration
