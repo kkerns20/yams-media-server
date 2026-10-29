@@ -217,3 +217,43 @@ Useful places to inspect include Sonarr/Radarr **Activity -> Queue**, **History*
 ### Lesson learned
 
 When debugging an automated pipeline, first prove each component independently and preserve a known-good manual workflow. That provides a baseline while automation is investigated.
+
+---
+
+## Case 4: Backup archive failed and left YAMS services stopped — 2026-10-28
+
+### Evidence and symptoms
+
+Source: owner-provided October 28 terminal results from Hephaestus. These are recorded results; Codex did not run another backup, execute recovery, or modify the backup script during this documentation work.
+
+The initial `yams backup` attempt stopped all YAMS services, then failed to create the archive. Services remained stopped after the command exited.
+
+### Root cause
+
+The archive operation could not read `/opt/yams/config/portainer/backups`, which is owned by root with permissions `700`. The backup process lacked the elevated access required to read that directory.
+
+The YAMS script's error handler exits on archive creation failure before reaching the service restart step. This cleanup failure extended a backup permissions error into a service outage. The successful retry does not establish that the script has been permanently fixed.
+
+### Recovery and successful retry
+
+The owner recovered services using `yams start`. Gluetun and Watchtower reported healthy in Docker after this initial recovery.
+
+A subsequent backup succeeded using elevated permissions and an `EXIT` trap to restart YAMS. The archive, `yams-backup-2026-10-28-1793234179.tar.gz`, passed a tar readability check and was owned by `root:root` with permissions `600`. No archive contents or credentials are reproduced here.
+
+Following the successful retry, YAMS reported all 11 containers running. No separate Docker health check was performed after that retry, and application-level functionality was not independently reverified.
+
+### Validation limits and lessons learned
+
+- Archive readability is not a restoration test. No backup restoration test has occurred, and no off-device backup has been completed.
+- Restarting services recovers from the interruption; it does not prove the archive can restore application state.
+- Check backup access requirements before stopping services. Preserve restrictive source permissions and treat configuration archives as sensitive.
+- Validate container state, Docker health checks where available, and application behavior separately after recovery.
+
+### Recommended script improvements — planned, not implemented
+
+1. Preflight source readability, required privileges, destination access, and available space before stopping services; fail early with a clear diagnostic.
+2. Register cleanup before stopping services. Track which services were running and attempt to restart those stopped by the backup on success, failure, or a handled interruption.
+3. Preserve the archive operation's failure status, report restart failures separately, and identify incomplete archives so they cannot be mistaken for successful backups. An `EXIT` trap cannot guarantee recovery from every host or process failure.
+4. Under separate authorization, test permission failures, archive failures, and handled interruptions in a controlled environment; verify cleanup, exit status, and service/application recovery.
+
+Next actions: document and authorize script hardening, create and verify an off-device copy, define retention and backup scope, and plan a controlled restoration test with validation and rollback. The [Home Lab backup milestone](https://github.com/kkerns20/linux-lab/blob/main/docs/devices/hephaestus.md#backup-failure-and-recovery--2026-10-28) records the host context.
